@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kb-tools"
+version = "1.0.0"
+description = "Graph, lexical search, guarded writes, and autonomous ingestion for an agent-maintained Obsidian knowledge base, served over MCP"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+# The core (graph, search, parsing, maintenance, CLI) is pure standard library;
+# only the MCP server entrypoint (kb.server) needs this.
+dependencies = ["mcp>=1.0,<2"]
+
+[project.scripts]
+kb = "kb.__main__:main"
+kb-server = "kb.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
