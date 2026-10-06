@@ -43,6 +43,8 @@ The root falls back to `KNOWLEDGE_BASE_ROOT`. Add `--json` before the subcommand
 | `kb_propose_changes` | unified diff per operation and before/after verification, over an in-memory overlay; writes nothing |
 | `kb_apply_changes` | commit a change set through the guarded writers, then re-verify on disk |
 | `kb_fetch_queries` | the recorded search history |
+| `kb_suggest_research` | record a gap or a subject worth researching, for a research process to read later; nothing is researched now |
+| `kb_fetch_suggestions` | the recorded research suggestions |
 | `kb_reload` | re-read the vault after an outside change |
 
 A change set is JSON: `write_page` under a flat `wiki/`, `write_index`, or `append_log`. Those are the only three writes that exist. `raw/` cannot be written, `log.md` can only be appended, and a path that escapes the vault is refused.

@@ -24,6 +24,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .api import KnowledgeBase
 from .querylog import QueryLog
+from .suggestions import SuggestionLog
 from .vault import VaultError
 
 INSTRUCTIONS = (
@@ -38,13 +39,15 @@ INSTRUCTIONS = (
     "{op:'write_index', text} to replace index.md, {op:'append_log', text} to append "
     "to the append-only log.md. raw/ can never be written. Call kb_reload after the "
     "vault changes on disk outside this server. kb_search and kb_build_context calls "
-    "are recorded; kb_fetch_queries reads that history back."
+    "are recorded; kb_fetch_queries reads that history back. kb_suggest_research "
+    "records a research suggestion and kb_fetch_suggestions reads them back."
 )
 
 
 def build_server(kb: KnowledgeBase) -> FastMCP:
     mcp = FastMCP("knowledge-base", instructions=INSTRUCTIONS)
     query_log = QueryLog.for_root(kb.vault.root)
+    suggestion_log = SuggestionLog.for_root(kb.vault.root)
 
     def _record(tool: str, query: str, limit: int, result: dict) -> None:
         """Record a query best-effort; never fail a tool call on telemetry.
@@ -139,6 +142,43 @@ def build_server(kb: KnowledgeBase) -> FastMCP:
         returned. Use it to see what has actually been asked of the wiki.
         """
         entries = query_log.read(limit=limit)
+        return {"count": len(entries), "entries": entries}
+
+    @mcp.tool()
+    def kb_suggest_research(
+        subject: str,
+        kind: str = "gap",
+        topic: str = "",
+        reason: str = "",
+        by: str = "",
+    ) -> dict:
+        """Tell the owner's research process about a gap in the knowledge base.
+
+        Call this when the knowledge base could not answer something your work
+        needed (kind "gap"), or when a subject the owner's work keeps touching
+        should be in the knowledge base (kind "subject"). One suggestion per gap.
+        Phrase `subject` as one plain sentence saying what is not yet known.
+        `topic` is optional (e.g. "AI Engineering", "Running and cardio"); `reason`
+        and `by` (who you are, e.g. "claude-code in repo X") are optional too.
+        Suggestions are read by a research process later; nothing is researched
+        now. Do not include secrets or personal data about third parties.
+        Returns {recorded, id, entry}, or {recorded: false, error} if rejected.
+        """
+        try:
+            entry = suggestion_log.record(subject, kind, topic, reason, by)
+        except (ValueError, OSError) as exc:
+            return {"recorded": False, "error": str(exc)}
+        return {"recorded": True, "id": entry["id"], "entry": entry}
+
+    @mcp.tool()
+    def kb_fetch_suggestions(limit: int = 50) -> dict:
+        """Read back recorded research suggestions (kb_suggest_research calls).
+
+        Returns the most recent ``limit`` entries oldest-first, each
+        {id, ts, kind, subject, topic, reason, by}, with ``count`` being how many
+        were returned.
+        """
+        entries = suggestion_log.read(limit=limit)
         return {"count": len(entries), "entries": entries}
 
     @mcp.tool()
