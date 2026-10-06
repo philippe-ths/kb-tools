@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kb-tools"
-version = "1.0.0"
+version = "1.1.0"
 description = "Graph, lexical search, guarded writes, and autonomous ingestion for an agent-maintained Obsidian knowledge base, served over MCP"
 readme = "README.md"
 license = "MIT"
