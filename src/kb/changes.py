@@ -11,7 +11,8 @@ The write rules are enforced here at construction, structurally, so an illegal
 change set cannot be represented:
 
 - pages may only be written under ``wiki/`` (flat, no nested paths);
-- ``index.md`` is replaced as a whole (the maintainer regenerates the catalog);
+- ``index.md`` is replaced as a whole, or gains one entry in an existing
+  category (so a single ingest need not read or rewrite the whole catalog);
 - ``log.md`` is reachable *only* through append, so prior entries can never be
   rewritten;
 - nothing here can target ``raw/`` (also re-checked at the vault write seam).
@@ -27,6 +28,7 @@ LOG_ID = "log"
 WRITE_PAGE = "write_page"
 WRITE_INDEX = "write_index"
 APPEND_LOG = "append_log"
+ADD_INDEX_ENTRY = "add_index_entry"
 
 
 class ChangeError(Exception):
@@ -109,7 +111,70 @@ class AppendLog:
         return {"op": APPEND_LOG, "text": self.text}
 
 
-Operation = WritePage | WriteIndex | AppendLog
+@dataclass(frozen=True)
+class AddIndexEntry:
+    """Add one bullet to an existing ``index.md`` category, e.g. category
+    ``Sources / AI agents`` and entry ``- [[wiki/src-x]] : one-line summary``.
+    The rest of the catalog is left byte-for-byte as it was."""
+
+    kind = ADD_INDEX_ENTRY
+    category: str
+    entry: str
+
+    def __post_init__(self) -> None:
+        entry = (self.entry or "").strip()
+        if "\n" in entry or "\r" in entry:
+            raise ChangeError("add_index_entry entry must be a single line")
+        if not entry.startswith("- ") or "[[" not in entry:
+            raise ChangeError("add_index_entry entry must be a '- [[wiki/...]] : summary' bullet")
+        if not (self.category or "").strip():
+            raise ChangeError("add_index_entry needs a category")
+        object.__setattr__(self, "entry", entry)
+        object.__setattr__(self, "category", self.category.strip())
+
+    @property
+    def target(self) -> str:
+        return INDEX_ID
+
+    def to_dict(self) -> dict:
+        return {"op": ADD_INDEX_ENTRY, "category": self.category, "entry": self.entry}
+
+
+def insert_index_entry(index_text: str, category: str, entry: str) -> str:
+    """``index_text`` with ``entry`` after the last bullet of ``category``.
+
+    The category is a path as ``kb_graph_summary`` reports it (``Section`` or
+    ``Section / Subsection``). Adding an entry already present changes nothing.
+    """
+    lines = index_text.splitlines(keepends=True)
+    if any(line.strip() == entry for line in lines):
+        return index_text
+    section = subsection = None
+    last_bullet = None
+    known = []
+    for i, raw in enumerate(lines):
+        line = raw.strip()
+        if line.startswith("## ") and not line.startswith("### "):
+            section, subsection = line[3:].strip(), None
+            continue
+        if line.startswith("### "):
+            subsection = line[4:].strip()
+            continue
+        if section is None or not line.startswith(("- ", "* ", "+ ")):
+            continue
+        path = f"{section} / {subsection}" if subsection else section
+        if path not in known:
+            known.append(path)
+        if path == category:
+            last_bullet = i
+    if last_bullet is None:
+        raise ChangeError(f"no index category {category!r}; categories: {', '.join(known)}")
+    newline = "" if lines[last_bullet].endswith("\n") else "\n"
+    lines.insert(last_bullet + 1, newline + entry + "\n")
+    return "".join(lines)
+
+
+Operation = WritePage | WriteIndex | AppendLog | AddIndexEntry
 
 
 def _operation_from_dict(item: dict) -> Operation:
@@ -122,6 +187,8 @@ def _operation_from_dict(item: dict) -> Operation:
         return WriteIndex(text=item.get("text", ""))
     if op == APPEND_LOG:
         return AppendLog(text=item.get("text", ""))
+    if op == ADD_INDEX_ENTRY:
+        return AddIndexEntry(category=item.get("category", ""), entry=item.get("entry", ""))
     raise ChangeError(f"unknown change op: {op!r}")
 
 

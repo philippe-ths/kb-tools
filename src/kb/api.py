@@ -16,10 +16,12 @@ from dataclasses import dataclass
 from .changes import (
     INDEX_ID,
     LOG_ID,
+    AddIndexEntry,
     AppendLog,
     ChangeSet,
     WriteIndex,
     WritePage,
+    insert_index_entry,
 )
 from .graph import KnowledgeGraph
 from .search import SearchIndex
@@ -121,9 +123,22 @@ class KnowledgeBase:
 
     # -- write workflow (Milestone 2) --------------------------------------
 
-    @staticmethod
-    def _as_changeset(changes) -> ChangeSet:
-        return changes if isinstance(changes, ChangeSet) else ChangeSet.from_dicts(changes)
+    def _as_changeset(self, changes) -> ChangeSet:
+        """The change set with each index entry resolved into a whole-index write
+        against the catalog as it stands at that point in the set."""
+        changeset = changes if isinstance(changes, ChangeSet) else ChangeSet.from_dicts(changes)
+        if not any(isinstance(op, AddIndexEntry) for op in changeset.operations):
+            return changeset
+        index = self.vault.read_text(INDEX_ID) if self.vault.exists(INDEX_ID) else ""
+        resolved = []
+        for op in changeset.operations:
+            if isinstance(op, AddIndexEntry):
+                index = insert_index_entry(index, op.category, op.entry)
+                op = WriteIndex(text=index)
+            elif isinstance(op, WriteIndex):
+                index = op.text
+            resolved.append(op)
+        return ChangeSet(tuple(resolved))
 
     def _overlay_graph(self, changeset: ChangeSet) -> KnowledgeGraph:
         """Build a graph over disk pages plus the proposed edits, no write.

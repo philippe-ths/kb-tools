@@ -66,6 +66,32 @@ class ApplyTest(unittest.TestCase):
         self.kb.apply([{"op": "write_index", "text": "# New index\n"}])
         self.assertEqual((self.root / "index.md").read_text(), "# New index\n")
 
+    def test_add_index_entry_inserts_one_line_and_keeps_the_rest(self):
+        before = (self.root / "index.md").read_text()
+        entry = "- [[wiki/concept-delta]] : the delta concept"
+        self.kb.apply([
+            {"op": "write_page", "page_id": "wiki/concept-delta", "text": "# Delta\n[[concept-alpha]]"},
+            {"op": "add_index_entry", "category": "Concepts / Greek", "entry": entry},
+        ])
+        after = (self.root / "index.md").read_text()
+        self.assertEqual(after.replace(entry + "\n", "", 1), before)
+        self.assertLess(after.index("concept-orphan"), after.index(entry), "goes after the category's last line")
+        self.assertLess(after.index(entry), after.index("## Sources"))
+        self.kb.apply([{"op": "add_index_entry", "category": "Concepts / Greek", "entry": entry}])
+        self.assertEqual((self.root / "index.md").read_text(), after, "adding it again changes nothing")
+
+    def test_add_index_entry_refuses_unknown_category_or_multiline_entry(self):
+        from kb.changes import ChangeError
+        before = (self.root / "index.md").read_text()
+        for change in (
+            {"op": "add_index_entry", "category": "Concepts / Latin", "entry": "- [[wiki/x]] : x"},
+            {"op": "add_index_entry", "category": "Sources", "entry": "- [[wiki/x]] : x\n## Injected"},
+            {"op": "add_index_entry", "category": "Sources", "entry": "no bullet [[wiki/x]]"},
+        ):
+            with self.assertRaises(ChangeError):
+                self.kb.apply([change])
+        self.assertEqual((self.root / "index.md").read_text(), before)
+
     def test_apply_append_log_preserves_prior(self):
         self.kb.apply([{"op": "append_log", "text": "## [2026-06-14] one"}])
         self.kb.apply([{"op": "append_log", "text": "## [2026-06-14] two"}])

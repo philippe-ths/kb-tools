@@ -6,6 +6,13 @@ This is the default implementation of the ``AgentRunner`` seam in
 worktree and tools restricted to that server. The orchestrator and gate never
 depend on this module directly; tests inject fakes instead.
 
+Each call is sealed: a model and effort chosen per role, a system prompt of
+its own (the role plus the vault's ``kb-schema.md``), only the knowledge-base
+MCP server, no built-in tools, no settings, skills or CLAUDE.md, run from an
+empty directory. Ingest summarises one source, so it runs on Sonnet; the review
+is the one truth check per run, so it keeps Opus. Each result carries the
+call's cost and token usage from the CLI's JSON envelope.
+
 The review runner fails closed: if it cannot positively confirm a clean verdict
 it reports a blocking objection, so an unparseable or failed review holds the PR
 open rather than letting it merge.
@@ -14,7 +21,9 @@ open rather than letting it merge.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -28,6 +37,13 @@ CLAUDE_BIN = "claude"
 # unattended run forever; on expiry we synthesise a non-zero result and let the
 # retry path handle it like any other failure.
 CLAUDE_TIMEOUT_SECONDS = 900
+# Model and effort per role, overridable by environment for a vault that
+# wants different trade-offs (KB_INGEST_MODEL, KB_INGEST_EFFORT, KB_REVIEW_...).
+INGEST_MODEL = os.environ.get("KB_INGEST_MODEL", "claude-sonnet-5-5")
+INGEST_EFFORT = os.environ.get("KB_INGEST_EFFORT", "medium")
+REVIEW_MODEL = os.environ.get("KB_REVIEW_MODEL", "claude-opus-5-5")
+REVIEW_EFFORT = os.environ.get("KB_REVIEW_EFFORT", "high")
+SCHEMA_FILE = "kb-schema.md"
 # Transient CLI failures (overload, network, timeout) once parked an open PR
 # with an empty-output "claude review failed". The review is read-only, so it
 # is safe to retry with backoff. Ingest stays single-attempt: kb_apply_changes
@@ -51,14 +67,27 @@ def _mcp_config(root: Path, worktree: Path) -> str:
     return json.dumps(payload)
 
 
+def _system_prompt(worktree: Path, role: str) -> str:
+    """The role, then the vault's own conventions; nothing else from the vault."""
+
+    schema_path = Path(worktree) / SCHEMA_FILE
+    schema = schema_path.read_text(encoding="utf-8") if schema_path.is_file() else ""
+    return (
+        f"You are the {role} for a personal Obsidian knowledge base. You work only "
+        "through the knowledge-base MCP tools. The vault's conventions follow.\n\n"
+        + schema
+    )
+
+
 def _ingest_prompt(source: str) -> str:
     return (
         "Follow the ingest operation in kb-schema.md for exactly one source: "
         f"`{source}`. Read that raw source via the knowledge-base MCP tools, then "
         "build a change set with kb_propose_changes and commit it with "
-        "kb_apply_changes that: writes or updates a wiki/ summary page, updates "
-        "index.md, appends one log.md line, and adds [[wikilinks]] to related "
-        "pages with no orphans. Cite the raw source. Only write under wiki/, "
+        "kb_apply_changes that: writes or updates a wiki/ summary page, adds its "
+        "catalog line with one add_index_entry op (pick the category from "
+        "kb_graph_summary; never rewrite index.md with write_index), appends one "
+        "log.md line, and adds [[wikilinks]] to related pages with no orphans. Cite the raw source. Only write under wiki/, "
         "index.md, and log.md; never edit raw/ or any code or policy file. When "
         "done, output a one-line summary."
     )
@@ -107,14 +136,17 @@ def _invoke_claude_once(
     raised exception, so callers treat it like any other failed run.
     """
 
+    # An empty working directory, so no CLAUDE.md or project settings load;
+    # the agent reaches the vault only through the MCP server.
     try:
-        return subprocess.run(
-            cmd,
-            cwd=str(worktree),
-            capture_output=True,
-            text=True,
-            timeout=CLAUDE_TIMEOUT_SECONDS,
-        )
+        with tempfile.TemporaryDirectory(prefix="kb-agent-") as empty:
+            return subprocess.run(
+                cmd,
+                cwd=empty,
+                capture_output=True,
+                text=True,
+                timeout=CLAUDE_TIMEOUT_SECONDS,
+            )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout or ""
         stderr = exc.stderr or ""
@@ -136,6 +168,9 @@ def _run_claude(
     *,
     attempts: int = 1,
     sleeper: Callable[[float], None] = time.sleep,
+    role: str = "ingest agent",
+    model: str = INGEST_MODEL,
+    effort: str = INGEST_EFFORT,
 ) -> subprocess.CompletedProcess:
     """Run a headless claude call, retrying transient failures.
 
@@ -152,12 +187,23 @@ def _run_claude(
         "json",
         "--mcp-config",
         _mcp_config(root, worktree),
+        "--strict-mcp-config",
         "--allowedTools",
         ALLOWED_TOOLS,
+        "--tools",
+        "",
         "--permission-mode",
         "default",
-        "--add-dir",
-        str(worktree),
+        "--model",
+        model,
+        "--effort",
+        effort,
+        "--system-prompt",
+        _system_prompt(worktree, role),
+        "--setting-sources",
+        "",
+        "--disable-slash-commands",
+        "--no-session-persistence",
     ]
     completed = _invoke_claude_once(cmd, worktree)
     attempt = 1
@@ -178,6 +224,27 @@ def _result_text(completed: subprocess.CompletedProcess) -> str:
     if isinstance(envelope, dict):
         return str(envelope.get("result", completed.stdout))
     return completed.stdout
+
+
+def _usage(completed: subprocess.CompletedProcess) -> dict:
+    """Cost and token usage from the claude JSON envelope; empty when absent."""
+
+    try:
+        envelope = json.loads(completed.stdout)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return {}
+    if not isinstance(envelope, dict):
+        return {}
+    usage = envelope.get("usage") or {}
+    return {
+        "cost_usd": envelope.get("total_cost_usd"),
+        "duration_ms": envelope.get("duration_ms"),
+        "turns": envelope.get("num_turns"),
+        "input_tokens": usage.get("input_tokens"),
+        "cache_read_tokens": usage.get("cache_read_input_tokens"),
+        "cache_write_tokens": usage.get("cache_creation_input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+    }
 
 
 def _parse_verdict(text: str) -> tuple[bool, str]:
@@ -214,8 +281,9 @@ def claude_agent_runner(
                 ok=False,
                 output=completed.stderr,
                 reason=f"claude ingest failed (exit {completed.returncode})",
+                usage=_usage(completed),
             )
-        return AgentResult(ok=True, output=_result_text(completed))
+        return AgentResult(ok=True, output=_result_text(completed), usage=_usage(completed))
 
     if kind == "review":
         # Read-only, so retry transient CLI failures before holding the merge.
@@ -224,6 +292,9 @@ def claude_agent_runner(
             worktree,
             root,
             attempts=REVIEW_ATTEMPTS,
+            role="adversarial reviewer",
+            model=REVIEW_MODEL,
+            effort=REVIEW_EFFORT,
         )
         if completed.returncode != 0:
             return AgentResult(
@@ -231,9 +302,12 @@ def claude_agent_runner(
                 output=completed.stderr,
                 blocking=True,
                 reason=f"claude review failed (exit {completed.returncode})",
+                usage=_usage(completed),
             )
         text = _result_text(completed)
         blocking, reason = _parse_verdict(text)
-        return AgentResult(ok=True, output=text, blocking=blocking, reason=reason)
+        return AgentResult(
+            ok=True, output=text, blocking=blocking, reason=reason, usage=_usage(completed)
+        )
 
     raise ValueError(f"unknown agent kind: {kind}")
