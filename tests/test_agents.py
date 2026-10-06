@@ -98,6 +98,62 @@ class RunClaudeRetryTest(unittest.TestCase):
         )
 
 
+class SealedCallTest(unittest.TestCase):
+    """Each call carries only what its role needs: the cost of a call is the
+    context it re-sends on every turn, so nothing from the vault's always-on
+    instructions, the user's settings or other MCP servers may ride along."""
+
+    def command(self, kind):
+        captured = {}
+
+        def fake_invoke(cmd, worktree):
+            captured["cmd"] = cmd
+            envelope = {"result": '{"blocking": false, "reason": ""}', "total_cost_usd": 0.12,
+                        "num_turns": 7, "usage": {"input_tokens": 10, "output_tokens": 900,
+                                                  "cache_read_input_tokens": 5000}}
+            return _cp(0, stdout=json.dumps(envelope))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "kb-schema.md").write_text("SCHEMA-MARKER conventions")
+            (Path(tmp) / "CLAUDE.md").write_text("ALWAYS-ON-MARKER")
+            with mock.patch.object(agents, "_invoke_claude_once", fake_invoke):
+                result = agents.claude_agent_runner(
+                    kind=kind, source="raw/x", sources=["raw/x"], worktree=Path(tmp), root=Path(tmp)
+                )
+        cmd = captured["cmd"]
+        return dict(zip(cmd, cmd[1:])), cmd, result
+
+    def test_ingest_runs_sealed_on_sonnet_and_review_on_opus(self):
+        opts, cmd, _ = self.command("ingest")
+        self.assertEqual(opts["--model"], agents.INGEST_MODEL)
+        self.assertIn("sonnet", agents.INGEST_MODEL)
+        self.assertIn("SCHEMA-MARKER", opts["--system-prompt"])
+        self.assertNotIn("ALWAYS-ON-MARKER", " ".join(cmd))
+        self.assertEqual(opts["--setting-sources"], "")
+        self.assertEqual(opts["--tools"], "")
+        self.assertIn("--strict-mcp-config", cmd)
+        self.assertNotIn("--add-dir", cmd)
+        opts, _, _ = self.command("review")
+        self.assertEqual(opts["--model"], agents.REVIEW_MODEL)
+
+    def test_result_carries_cost_and_usage(self):
+        _, _, result = self.command("ingest")
+        self.assertEqual(result.usage["cost_usd"], 0.12)
+        self.assertEqual(result.usage["output_tokens"], 900)
+        self.assertEqual(result.to_dict()["usage"]["turns"], 7)
+
+    def test_call_runs_outside_the_vault(self):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cwd"] = kwargs["cwd"]
+            return _cp(0)
+
+        with mock.patch.object(agents.subprocess, "run", fake_run):
+            agents._invoke_claude_once(["claude"], Path("/vault/worktree"))
+        self.assertNotIn("/vault/worktree", seen["cwd"])
+
+
 class InvokeTimeoutTest(unittest.TestCase):
     def test_timeout_becomes_nonzero_result(self):
         def boom(*args, **kwargs):
@@ -113,7 +169,7 @@ class ReviewRunnerTest(unittest.TestCase):
     def test_review_uses_review_attempts(self):
         captured = {}
 
-        def fake_run(prompt, worktree, root, *, attempts=1, sleeper=None):
+        def fake_run(prompt, worktree, root, *, attempts=1, **kwargs):
             captured["attempts"] = attempts
             envelope = json.dumps({"result": '{"blocking": false, "reason": "ok"}'})
             return _cp(0, stdout=envelope)
@@ -154,7 +210,7 @@ class IngestRunnerTest(unittest.TestCase):
     def test_ingest_is_single_attempt(self):
         captured = {}
 
-        def fake_run(prompt, worktree, root, *, attempts=1, sleeper=None):
+        def fake_run(prompt, worktree, root, *, attempts=1, **kwargs):
             captured["attempts"] = attempts
             return _cp(0, stdout='{"result": "done"}')
 

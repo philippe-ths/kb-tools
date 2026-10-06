@@ -91,6 +91,7 @@ class AgentResult:
     output: str = ""
     blocking: bool = False
     reason: str = ""
+    usage: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -98,6 +99,7 @@ class AgentResult:
             "output": self.output,
             "blocking": self.blocking,
             "reason": self.reason,
+            "usage": self.usage,
         }
 
 

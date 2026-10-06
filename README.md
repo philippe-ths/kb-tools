@@ -47,7 +47,7 @@ The root falls back to `KNOWLEDGE_BASE_ROOT`. Add `--json` before the subcommand
 | `kb_fetch_suggestions` | the recorded research suggestions |
 | `kb_reload` | re-read the vault after an outside change |
 
-A change set is JSON: `write_page` under a flat `wiki/`, `write_index`, or `append_log`. Those are the only three writes that exist. `raw/` cannot be written, `log.md` can only be appended, and a path that escapes the vault is refused.
+A change set is JSON: `write_page` under a flat `wiki/`, `write_index`, `add_index_entry` (one catalog line into an existing category, leaving the rest of `index.md` untouched), or `append_log`. Those are the only writes that exist. `raw/` cannot be written, `log.md` can only be appended, and a path that escapes the vault is refused.
 
 ## Autonomous ingestion
 
@@ -89,3 +89,7 @@ The core is standard-library Python 3.10+; only the MCP server needs the `mcp` S
 ## License
 
 MIT. The example vault's content is included for demonstration.
+
+## Auto-ingest agents
+
+Each `claude` call auto-ingest makes is sealed: its own system prompt (the role plus the vault's `kb-schema.md`), only the knowledge-base MCP server, no built-in tools, settings, skills or `CLAUDE.md`, run from an empty directory. Ingest runs on `claude-sonnet-5-5` at medium effort; the one review per run on `claude-opus-5-5` at high effort. Override with `KB_INGEST_MODEL`, `KB_INGEST_EFFORT`, `KB_REVIEW_MODEL`, `KB_REVIEW_EFFORT`. Each result in the run report carries the call's `usage` (cost, turns, tokens).

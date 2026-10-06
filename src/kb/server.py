@@ -36,7 +36,9 @@ INSTRUCTIONS = (
     "to preview diffs and before/after verification without writing, then "
     "kb_apply_changes to commit it. A change is one of: "
     "{op:'write_page', page_id:'wiki/<name>', text} to create/update a wiki page, "
-    "{op:'write_index', text} to replace index.md, {op:'append_log', text} to append "
+    "{op:'write_index', text} to replace index.md, {op:'add_index_entry', category, entry} "
+    "to add one '- [[wiki/<page>]] : summary' line to an index category (the category "
+    "paths kb_graph_summary lists) without rewriting the catalog, {op:'append_log', text} to append "
     "to the append-only log.md. raw/ can never be written. Call kb_reload after the "
     "vault changes on disk outside this server. kb_search and kb_build_context calls "
     "are recorded; kb_fetch_queries reads that history back. kb_suggest_research "
@@ -117,7 +119,9 @@ def build_server(kb: KnowledgeBase) -> FastMCP:
         """Preview a change set without writing.
 
         Each change is {op:'write_page', page_id, text} | {op:'write_index', text}
-        | {op:'append_log', text}. Returns a unified diff and create/update/append
+        | {op:'add_index_entry', category, entry} | {op:'append_log', text}.
+        Prefer add_index_entry for a new page: it adds one catalog line without
+        reading or rewriting index.md. Returns a unified diff and create/update/append
         action per operation, plus verification before and after the change as it
         would land (with the warning delta). Nothing is written.
         """
