@@ -87,9 +87,14 @@ def _ingest_prompt(source: str) -> str:
         "kb_apply_changes that: writes or updates a wiki/ summary page, adds its "
         "catalog line with one add_index_entry op (pick the category from "
         "kb_graph_summary; never rewrite index.md with write_index), appends one "
-        "log.md line, and adds [[wikilinks]] to related pages with no orphans. Cite the raw source. Only write under wiki/, "
-        "index.md, and log.md; never edit raw/ or any code or policy file. When "
-        "done, output a one-line summary."
+        "log.md line, and links the page into the wiki: add a [[wikilink]] to it "
+        "from at least one existing wiki page, the closest related one, or the "
+        "topic's overview or map page when nothing is closer (index.md does not "
+        "count). Cite the raw source. Only write under wiki/, index.md, and "
+        "log.md; never edit raw/ or any code or policy file. You are done only "
+        "when kb_verify reports no warning that was not there before you began, "
+        "which is the check the merge gate applies; fix any it reports. Then "
+        "output a one-line summary."
     )
 
 
